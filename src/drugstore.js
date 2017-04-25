@@ -9,72 +9,35 @@ var pretty = require('express-prettify');
 var db = new sqlite3.Database('DrugStores.db');
 var restapi = express();
 
-var drugStore = "DrugStore.name, DrugStore.work_time, Location.longitude, " +
-    "Location.latitude, Location.address"
+var drugStore = "DrugStore.id, DrugStore.name, DrugStore.work_time, Location.longitude, " +
+    "Location.latitude, Location.address";
 
 restapi.use(pretty({query: 'pretty'}));
 
 function arePointsNear(checkPoint, centerPoint, km) {
-    var ky = 40000 / 360;
-    var kx = Math.cos(Math.PI * centerPoint.lat / 180.0) * ky;
-    var dx = Math.abs(centerPoint.lng - checkPoint.lng) * kx;
-    var dy = Math.abs(centerPoint.lat - checkPoint.lat) * ky;
-    return Math.sqrt(dx * dx + dy * dy) <= km;
+    var dLat = (checkPoint.lat - centerPoint.lat) * Math.PI / 180;
+    var dLon = (checkPoint.lng - centerPoint.lng) * Math.PI / 180;
+    var a = 0.5 - Math.cos(dLat) / 2 + Math.cos(checkPoint.lat * Math.PI / 180)
+        * Math.cos(centerPoint.lat * Math.PI / 180) * (1 - Math.cos(dLon)) / 2;
+    d = Math.round(6371000 * 2 * Math.asin(Math.sqrt(a)));
+    return d <= km*1000;
 }
 
-var vasteras = { lat: 59.615911, lng: 16.544232 };
-var stockholm = { lat: 59.345635, lng: 18.059707 };
-
-var n = arePointsNear(vasteras, stockholm, 1);
-
-console.log(n);
-
-restapi.route("/drugstore_info")
-    .get(function (req,res) {
-        console.log("start get full info about Drug Store");
-        var drugStoreId;
-        if (res.req.query.drug_store_id)
-            drugStoreId = res.req.query.drug_store_id;
-        var response = {};
-        async.series([
-            function (callback) { // Full info
-                db.get('Select ' + drugStore + ' from DrugStore ' +
-                    'left join Location on Location.id = DrugStore.location_id ' +
-                    'where DrugStore.id = ' + drugStoreId, function (err, row) {
-                    response.drugStore = row;
-                    callback();
-                })
-            },
-            function (callback) { // Phone number for DrugStores
-                var sqlResponse = 'select Phone.number from Phone ' +
-                    'left join DrugStore on DrugStore.id = Phone.drugstore_id ' +
-                    'where DrugStore.id = ' + drugStoreId;
-                db.all(sqlResponse, function (err, row) {
-                    response.phone = row;
-                    callback();
-                })
-            }
-        ], function () {
-            res.json(response);
-        });
-        console.log("finish get full info about Drug Store")
-    });
-
-restapi.route("/drugstore_search")
-    .get(function (req,res) {
+restapi.route("/drugstores")
+    .get(function (req, res) {
         console.log("start get  info about Drug Store for search");
         var drugStoreName;
         var numPage;
+
         if (res.req.query.num_page)
             numPage = res.req.query.num_page;
         var num = 20 * (numPage - 1);
-        if(res.req.query.drug_store_name)
-            drugStoreName=res.req.query.drug_store_name;
-        var sqlRequest = "select DrugStore.id, DrugStore.name, DrugStore.work_time, " +
-            "Location.address from DrugStore " +
+        if (res.req.query.drug_store_name)
+            drugStoreName = res.req.query.drug_store_name;
+        var sqlRequest = "select DrugStore.id, " + drugStore + " from DrugStore " +
             "left join Location on Location.id = DrugStore.location_id ";
-        if(drugStoreName)
-            sqlRequest+= " where DrugStore.name like '" + drugStoreName + "'";
+        if (drugStoreName)
+            sqlRequest += " where DrugStore.name like '" + drugStoreName + "'";
         if (numPage == 1)
             sqlRequest += ' limit 0,20';
         else {
@@ -85,6 +48,43 @@ restapi.route("/drugstore_search")
             res.json({"data": row})
         });
         console.log("finish get  info about Drug Store for search");
+    });
+
+restapi.route("/drugstoresmap")
+    .get(function (req, res) {
+
+        var center;
+        if (res.req.query.latitude && res.req.query.longitude)
+            center = {lat: parseFloat(res.req.query.latitude), lng: parseFloat(res.req.query.longitude)};
+
+        var result = [];
+        var response={};
+        response.data=[];
+
+        async.series([
+            function (callback) { // Full info
+                db.all('Select ' + drugStore + ' from DrugStore ' +
+                    'left join Location on Location.id = DrugStore.location_id', function (err, row) {
+                    result =  row;
+                    callback();
+                })
+            },
+            function (callback) {
+                for (var position in result)
+                    if (arePointsNear({lat: result[position].longitude, lng: result[position].latitude}, center, 1)){
+                        var drugStoreModel = result[position];
+
+                        db.all("Select * from Phone where Phone.drugstore_id = "+ drugStoreModel.id , function (err, row) {
+                            drugStoreModel.phone = row;
+                        });
+
+                        response.data.push(drugStoreModel);
+                    }
+                callback();
+            }
+        ], function () {
+            res.json(response);
+        });
     });
 
 restapi.route('*')
